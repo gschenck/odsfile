@@ -1,7 +1,7 @@
 -- module(...,package.seeall)
 zip=require "minizip"
-xmlparser = require ("luaxml-mod-xml")
-handler = require("luaxml-mod-handler")
+local xmlparser = require ("luaxml-mod-xml")
+local handler = require("luaxml-mod-handler")
 
 local function load(filename)
   local p = {
@@ -26,10 +26,52 @@ local function load(filename)
 end
 
 local function getTable(x,table_name)
+  local t = getTable0(x,table_name)
+  local t2 = {}
+
+  for key, val in pairs(t) do
+    if key == "table:table-row" then
+      local rows = {}
+      
+      for i = 1, #val do
+        local r = val[i]
+        local rowRep = r["_attr"]["table:number-rows-repeated"] or 1
+
+        row = {}
+        row["_attr"] = r["_attr"]
+        local cc = r["table:table-cell"] or {}
+        
+        local columns = {}
+        --for j = 1, #cc do
+         -- local c = cc[j]
+				for _, c in ipairs(cc) do
+					c["_attr"] = c["_attr"] or {}
+          local colRep = c["_attr"]["table:number-columns-repeated"] or 1
+          for k = 1, colRep, 1 do
+            table.insert(columns, c)
+          end
+        end
+        row["table:table-cell"] = columns
+        
+        for j = 1, rowRep, 1 do
+          table.insert(rows, row)
+        end
+      end
+      
+      t2[key] = rows
+    else
+      t2[key] = val
+    end
+  end
+
+  return t2
+end
+
+function getTable0(x,table_name)
   local tables = x.root["office:document-content"]["office:body"]["office:spreadsheet"]["table:table"]
   if #tables > 1 then
     if type(tables) == "table" and table_name ~= nil then 
-        for k,v in pairs(tables) do
+      for k,v in pairs(tables) do
           if(v["_attr"]["table:name"]==table_name) then
             return v, k
           end 
@@ -42,6 +84,17 @@ local function getTable(x,table_name)
   else 
     return tables
   end
+end
+
+function getColumnCount(tbl)
+  local tbl = tbl or {}
+  local columns = tbl["table:table-column"] or {}
+  local x = 0
+  for _, c in pairs(columns) do
+    local rep = c["table:number-columns-repeated"] or 1
+    x = x + rep
+  end
+  return x
 end
 
 local function table_slice (values,i1,i2)
@@ -69,6 +122,8 @@ end
 
 local function tableValues(tbl,x1,y1,x2,y2)
   local t= {}
+  local x1 = x1 or 1
+  local x2 = x2 or getColumnCount(tbl)
   if type(tbl["table:table-row"])=="table" then
     local rows = table_slice(tbl["table:table-row"],y1,y2)
     for k,v in pairs(rows) do
@@ -110,6 +165,7 @@ local function tableValues(tbl,x1,y1,x2,y2)
   return t
 end
 
+
 local function getRange(range)
   local r = range:lower()
   local function getNumber(s)
@@ -127,6 +183,7 @@ local function getRange(range)
   end
 end
 
+
 local function interp(s, tab)
   return (s:gsub('(-%b{})', 
     function(w) 
@@ -137,8 +194,42 @@ local function interp(s, tab)
   )
 end
 
+get_link = function(val)
+  local k = val["text:a"][1]
+  local href = val["text:a"]["_attr"]["xlink:href"]
+  return "\\odslink{"..href.."}{"..k.."}"
+end
+
+function escape(s)
+  return string.gsub(s, "([#%%$&])", "\\%1")
+end
+
+
+function get_cell(val, delim)
+  local val = val or ""
+  local typ = type(val)
+  if typ == "string" then
+    return escape(val)
+  elseif typ == "table" then
+    if val["text:a"] then
+      return get_link(val)
+    elseif val["text:span"] then
+      return get_cell(val["text:span"], delim)
+    elseif val["text:s"] then
+      return get_cell(val["text:s"], delim)
+    else
+      local t = {}
+      for _,v in ipairs(val) do
+        local c = get_cell(v, delim)
+        table.insert(t, c)
+      end
+      return table.concat(t,delim)
+    end
+  end
+end
 
 -- Interface for adding new rows to the spreadsheet
+
 local function newRow()
   local p = {
     pos = 0,
@@ -179,9 +270,9 @@ local function newRow()
       local pos = pos or self:findLastRow(sheet)
       print("pos je: ",pos)
       if sheet["table:table-column"]["_attr"] and sheet["table:table-column"]["_attr"]["table:number-columns-repeated"] then
-	table_columns = sheet["table:table-column"]["_attr"]["table:number-columns-repeated"]
+        table_columns = sheet["table:table-column"]["_attr"]["table:number-columns-repeated"]
       else 
-	table_columns = #sheet["table:table-column"]
+        table_columns = #sheet["table:table-column"]
       end
       for i=1, table_columns do
         table.insert(t,self.cells[i] or {})  
@@ -195,6 +286,7 @@ end
 
 
 -- function for updateing the archive. Depends on external zip utility
+
 local function updateZip(zipfile, updatefile)
   local command  =  string.format("zip %s %s",zipfile, updatefile)
   print ("Updating an ods file.\n" ..command .."\n Return code: ", os.execute(command))  
