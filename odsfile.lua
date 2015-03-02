@@ -1,18 +1,22 @@
-module(...,package.seeall)
-require "zip"
+-- module(...,package.seeall)
+zip=require "minizip"
 xmlparser = require ("luaxml-mod-xml")
 handler = require("luaxml-mod-handler")
 
-
-function load(filename)
+local function load(filename)
   local p = {
     file = zip.open(filename),
     content_file_name = "content.xml",
     loadContent = function(self,filename)
       local treehandler = handler.simpleTreeHandler()
       local filename = filename or self.content_file_name  
-      local xmlfile = self.file:open(filename)
-      local text = xmlfile:read("*a")
+      local text
+      if self.file:locate_file(filename) then
+        text = self.file:extract(filename)
+      else
+        print(filename.." not found!")       
+        exit()
+      end
       local xml = xmlparser.xmlParser(treehandler)
       xml:parse(text)
       return treehandler
@@ -21,7 +25,7 @@ function load(filename)
   return p
 end
 
-function getTable(x,table_name)
+local function getTable(x,table_name)
   local tables = x.root["office:document-content"]["office:body"]["office:spreadsheet"]["table:table"]
   if #tables > 1 then
     if type(tables) == "table" and table_name ~= nil then 
@@ -40,47 +44,7 @@ function getTable(x,table_name)
   end
 end
 
-function tableValues(tbl,x1,y1,x2,y2)
-  local t= {}
-  if type(tbl["table:table-row"])=="table" then
-    local rows = table_slice(tbl["table:table-row"],y1,y2)
-    for k,v in pairs(rows) do
-      -- In every sheet, there are two rows with no data at the bottom, we need to strip them
-      if(v["_attr"] and v["_attr"]["table:number-rows-repeated"] and tonumber(v["_attr"]["table:number-rows-repeated"])>10000) then break end
-      local j = {}
-      if #v["table:table-cell"] > 1 then
-        local r = table_slice(v["table:table-cell"],x1,x2)
-        for p,n in pairs(r) do
-          table.insert(j,{value=n["text:p"] or "",attr=n["_attr"]})
-        end
-      else
-        local p = {value=v["table:table-cell"]["text:p"],attr=v["table:table-cell"]["_attr"]} 
-        table.insert(j,p) 
-      end  
-      table.insert(t,j)
-    end
-  end
-  return t
-end
-
-function getRange(range)
-  local r = range:lower()
-  local function getNumber(s)
-    if s == "" or s == nil then return nil end
-    local f,ex = 0,0
-    for i in string.gmatch(s:reverse(),"(.)") do
-      f = f + (i:byte()-96) * 26 ^ ex
-      ex = ex + 1 
-    end
-    return f
-  end
-  for x1,y1,x2,y2 in r:gmatch("(%a*)(%d*):*(%a*)(%d*)") do
-    return getNumber(x1),tonumber(y1),getNumber(x2),tonumber(y2) 
-   --print(string.format("%s, %s, %s, %s",getNumber(x1),y1,getNumber(x2),y2))
-  end
-end
-
-function table_slice (values,i1,i2)
+local function table_slice (values,i1,i2)
   -- Function from http://snippets.luacode.org/snippets/Table_Slice_116
   local res = {}
   local n = #values
@@ -103,7 +67,67 @@ function table_slice (values,i1,i2)
   return res
 end
 
-function interp(s, tab)
+local function tableValues(tbl,x1,y1,x2,y2)
+  local t= {}
+  if type(tbl["table:table-row"])=="table" then
+    local rows = table_slice(tbl["table:table-row"],y1,y2)
+    for k,v in pairs(rows) do
+      -- In every sheet, there are two rows with no data at the bottom, we need to strip them
+      if(v["_attr"] and v["_attr"]["table:number-rows-repeated"] and tonumber(v["_attr"]["table:number-rows-repeated"])>10000) then break end
+      local j = {}
+      if #v["table:table-cell"] > 1 then
+        local r = table_slice(v["table:table-cell"],x1,x2)
+        for p,n in pairs(r) do
+          local value=n["text:p"] 
+          if type(value) == "table" then
+            value = n["_attr"]["office:value"]
+          elseif n["_attr"] and n["_attr"]["office:value-type"]=="float" and type(value)=="string" then
+            value=value:gsub(",", ".")
+        end
+          if value and type(value) ~= "table" and value~="" then 
+            table.insert(j,{["value"]=value, attr=n["_attr"]})
+      else
+            table.insert(j,{["value"]="", attr=""})
+          end
+        end
+      else
+        local value=v["table:table-cell"]["text:p"]
+        if type(value) == "table" then
+            value = v["_attr"]["office:value"]
+        elseif v["_attr"]["office:value-type"]=="float" and type(value)=="string" then
+          value:gsub(",", ".")
+        end  
+        if value and type(value) ~= "table" and  value~="" then 
+          local p = {["value"]=value,attr=v["table:table-cell"]["_attr"]} 
+        table.insert(j,p) 
+        else
+          table.insert(j,{["value"]="", attr=""})
+        end
+      end  
+      if #j>0 then table.insert(t,j) end
+    end
+  end
+  return t
+end
+
+local function getRange(range)
+  local r = range:lower()
+  local function getNumber(s)
+    if s == "" or s == nil then return nil end
+    local f,ex = 0,0
+    for i in string.gmatch(s:reverse(),"(.)") do
+      f = f + (i:byte()-96) * 26 ^ ex
+      ex = ex + 1 
+    end
+    return f
+  end
+  for x1,y1,x2,y2 in r:gmatch("(%a*)(%d*):*(%a*)(%d*)") do
+    return getNumber(x1),tonumber(y1),getNumber(x2),tonumber(y2) 
+   --print(string.format("%s, %s, %s, %s",getNumber(x1),y1,getNumber(x2),y2))
+  end
+end
+
+local function interp(s, tab)
   return (s:gsub('(-%b{})', 
     function(w) 
       s = w:sub(3, -2)
@@ -115,8 +139,7 @@ end
 
 
 -- Interface for adding new rows to the spreadsheet
-
-function newRow()
+local function newRow()
   local p = {
     pos = 0,
     cells = {},
@@ -172,7 +195,19 @@ end
 
 
 -- function for updateing the archive. Depends on external zip utility
-function updateZip(zipfile, updatefile)
+local function updateZip(zipfile, updatefile)
   local command  =  string.format("zip %s %s",zipfile, updatefile)
   print ("Updating an ods file.\n" ..command .."\n Return code: ", os.execute(command))  
 end
+
+-- set up a module
+local M={}
+M.load=load
+M.getTable = getTable
+M.table_slice = table_slice
+M.tableValues = tableValues
+M.getRange = getRange
+M.interp = interp
+M.newRow = newRow
+M.updateZip = updateZip
+return M
